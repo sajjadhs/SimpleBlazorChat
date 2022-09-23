@@ -1,0 +1,318 @@
+﻿@using BlazorChatSample.Shared
+@using System.Threading
+@page "/"
+@inject NavigationManager navigationManager
+@inject Blazored.LocalStorage.ILocalStorageService localStore
+@inject IJSRuntime JSRuntime
+
+<div class="top-row px-4">
+    @if (chatting)
+    {
+        <p>You are connected as <b>@username</b></p>
+        <button class="btn btn-sm btn-warning ml-md-auto" @onclick="@DisconnectAsync">Disconnect</button>
+    }
+</div>
+
+<div class="content px-4">
+    @if (!chatting)
+    {
+        @* Moved instructions to shared component *@
+        <Instructions />
+
+        <h2>Chat</h2>
+
+        <p>
+            User Name:
+        </p>
+
+        <input type="text" maxlength="32" @bind="@username" />
+        <input type="text" maxlength="32" @bind="@password" />
+        <button type="button" @onclick="@Chat"><span class="oi oi-chat" aria-hidden="true"></span> Chat!</button>
+
+        @if (message != null)
+        {
+            <div class="invalid-feedback">@message</div>
+            <small id="emailHelp" class="form-text text-muted">@message</small>
+        }
+    }
+
+
+    @if (chatting)
+    {
+        <div style="height:85vh">
+            <div style="height:79% !important;overflow-y: scroll !important;overflow:hidden " id="ChatBox">
+                <div style="position: relative;">
+                    <Microsoft.AspNetCore.Components.Web.Virtualization.Virtualize Items="messages" Context="item">
+                        <div class="@item.CSS">
+                            <div class="user">@item.Username</div>
+                            <div class="msg">@item.Body</div>
+                        </div>
+                    </Microsoft.AspNetCore.Components.Web.Virtualization.Virtualize>
+                </div>
+            </div>
+            <p>
+                @if (Typing)
+                {
+                    <small style="color:green">Typing...</small>
+                }
+                else
+                {
+                    <small>.</small>
+                }
+                @if (WindowsIsHidden)
+                {
+                    <b style="color:red">:o</b>
+                }
+                else
+                {
+                    <b style="color:green">:)</b>
+                }
+            </p>
+            <div style="height:15%">
+                @if (Disconnected)
+                {
+                    <button @onclick="Reconnect" class="btn btn-danger">Press to reconnect!</button>
+                }
+                else
+                {
+                    <textarea class="input-lg" id="ddinput" @onkeydown="@KeyDown" placeholder="enter your comment" @bind="@newMessage"></textarea>
+                    <button class="btn btn-outline-primary" @onclick="@SendAsync">Send</button>
+                }
+            </div>
+        </div>
+    }
+</div>
+
+
+@code {
+    public bool WindowsIsHidden { get; set; }
+    public bool Disconnected { get; set; }
+
+    public async void Reconnect()
+    {
+        if (client == null)
+        {
+            await Connect();
+        }
+        else
+        {
+            await client.ReEstablishConnection();
+        }
+    }
+
+    [JSInvokable]
+    public async void WindowsStatus(bool IsVisible)
+    {
+        WindowsIsHidden = !IsVisible;
+        //inform party i'm not watching
+    }
+    public async Task RegisterDotNetHandler()
+    {
+        var objRef = DotNetObjectReference.Create(this);
+        await Task.Delay(1000);
+        await JSRuntime.InvokeAsync<string>("registerHelper", objRef);
+    }
+
+    protected async Task KeyDown(KeyboardEventArgs e)
+    {
+        await client.PingTyping();
+    }
+
+    protected async override Task OnInitializedAsync()
+    {
+        try
+        {
+            cancellationTokenSource = new CancellationTokenSource();
+            username = await localStore.GetItemAsStringAsync("name");
+            password = await localStore.GetItemAsStringAsync("password");
+            await RegisterDotNetHandler();
+            await Chat();
+        }
+        catch { }
+        await base.OnInitializedAsync();
+    }
+    // flag to indicate chat status
+    bool chatting = false;
+
+    bool Typing = false;
+
+    // name of the user who will be chatting
+    string username = null;
+
+    string password = null;
+
+    ChatClient client = null;
+
+    // on-screen message
+    string message = null;
+
+    bool initial = true;
+
+    // new message input
+    string newMessage = null;
+
+    CancellationTokenSource cancellationTokenSource;
+
+    // list of messages in chat
+    List<Message> messages = new List<Message>();
+
+    /// <summary>
+    /// Start chat client
+    /// </summary>
+    async Task Chat()
+    {
+        // check username is valid
+        if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(password))
+        {
+            message = "Please enter a name and password";
+            return;
+        };
+
+        username = username.Replace("\u0022", string.Empty);
+        password = password.Replace("\u0022", string.Empty);
+
+        await localStore.SetItemAsync("name", username);
+        await localStore.SetItemAsync("password", password);
+
+        try
+        {
+            await Connect();
+        }
+        catch (Exception e)
+        {
+            message = $"ERROR: Failed to start chat client: {e.Message}";
+            Console.WriteLine(e.Message);
+            Console.WriteLine(e.StackTrace);
+        }
+    }
+
+    async Task Connect()
+    {
+        // remove old messages if any
+        messages.Clear();
+
+        // Create the chat client
+        string baseUrl = navigationManager.BaseUri;
+        client = new ChatClient(username, password, baseUrl);
+        // add an event handler for incoming messages
+        client.MessageReceived += MessageReceived;
+        client.TypingPinged += PartnerTyping;
+        client.Disconnected += On_Disconnected;
+        // start the client
+        Console.WriteLine("Index: chart starting...");
+        await client.StartAsync();
+        Console.WriteLine("Index: chart started?");
+
+        chatting = true;
+    }
+
+    void On_Disconnected(bool isDC)
+    {
+        Disconnected = isDC;
+        StateHasChanged();
+    }
+
+    async void PartnerTyping(object sender, string username)
+    {
+        cancellationTokenSource.Cancel();
+
+        cancellationTokenSource = new CancellationTokenSource();
+        try
+        {
+            Typing = true;
+            StateHasChanged();
+            await Task.Delay(400, cancellationTokenSource.Token);
+            Typing = false;
+            StateHasChanged();
+        }
+        catch
+        {
+            // Do nothing
+        }
+    }
+
+    /// <summary>
+    /// Inbound message
+    /// </summary>
+    /// <param name="sender"></param>
+    /// <param name="e"></param>
+    async void MessageReceived(object sender, MessageReceivedEventArgs e)
+    {
+        if (WindowsIsHidden)
+        {
+            await JSRuntime.InvokeVoidAsync("playNotification");
+        }
+        else
+        {
+
+        }
+        Console.WriteLine($"Blazor: receive {e.Username}: {e.Message}");
+        bool isMine = false;
+        if (!string.IsNullOrWhiteSpace(e.Username))
+        {
+            isMine = e.Username.ToLower().Contains(username.ToLower());
+        }
+
+        var newMsg = new Message(e.Username, e.Message, isMine);
+        messages.Add(newMsg);
+
+        // Inform blazor the UI needs updating
+        StateHasChanged();
+
+        await JSRuntime.InvokeVoidAsync("updateScroll");
+    }
+
+    async Task DisconnectAsync()
+    {
+        if (chatting)
+        {
+            client.MessageReceived -= MessageReceived;
+            client.TypingPinged -= PartnerTyping;
+            client.Disconnected -= On_Disconnected;
+
+            await client.StopAsync();
+            client = null;
+            message = "chat ended";
+            chatting = false;
+        }
+    }
+
+    async Task SendAsync()
+    {
+        if (chatting && !string.IsNullOrWhiteSpace(newMessage))
+        {
+            // send message to hub
+            await client.SendAsync(newMessage);
+            // clear input box
+            newMessage = "";
+
+            await JSRuntime.InvokeVoidAsync("Focus", "ddinput");
+        }
+    }
+
+    class Message
+    {
+        public Message(string username, string body, bool mine)
+        {
+            Username = username;
+            Body = body;
+            Mine = mine;
+        }
+
+        public string Username { get; set; }
+        public string Body { get; set; }
+        public bool Mine { get; set; }
+
+        /// <summary>
+        /// Determine CSS classes to use for message div
+        /// </summary>
+        public string CSS
+        {
+            get
+            {
+                return Mine ? "sent" : "received";
+            }
+        }
+    }
+
+}
